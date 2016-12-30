@@ -44,32 +44,59 @@
 #include "spi.h"
 #include "mraa_internal.h"
 
+
 #define MAX_SIZE 64
 #define SPI_MAX_LENGTH 4096
 
 static mraa_spi_context
-mraa_spi_init_internal(mraa_adv_func_t* func_table)
+mraa_spi_init_internal(mraa_adv_func_t* advance_func)
 {
-    mraa_spi_context dev = (mraa_spi_context) calloc(1, sizeof(struct _spi));
-    if (dev == NULL) {
-        return NULL;
-    }
-    dev->advance_func = func_table;
+    mraa_result_t status = MRAA_SUCCESS;
 
-    return dev;
+    mraa_spi_context dev = (mraa_spi_context) calloc(1, sizeof(struct _spi));
+
+    if (dev == NULL)
+        return NULL;
+
+    dev->advance_func = advance_func;
+
+    if (IS_FUNC_DEFINED(dev, spi_init_bus_replace)) {
+        status = dev->advance_func->spi_init_bus_replace(dev);
+
+        if (status != MRAA_SUCCESS)
+            goto init_internal_cleanup;
+    } 
+
+    init_internal_cleanup:
+    if (status == MRAA_SUCCESS) {
+        return dev;
+    } else {
+        if (dev != NULL)
+            free(dev);
+        return NULL;
+   }
 }
 
 mraa_spi_context
 mraa_spi_init(int bus)
 {
+
     if (plat == NULL) {
-        syslog(LOG_ERR, "spi: Platform Not Initialised");
+        syslog(LOG_ERR, "spi%i_init: Platform Not Initialised", bus);
         return NULL;
     }
+
     if (mraa_is_sub_platform_id(bus)) {
-        syslog(LOG_ERR, "spi: Spi module doesn't support subplatforms");
-        return NULL;
+        syslog(LOG_NOTICE, "spi%i_init: Using sub platform", bus);
+        plat = plat->sub_platform;
+        if (plat == NULL) {
+            syslog(LOG_ERR, "spi%i_init: Sub platform Not Initialised", bus);
+            return NULL;
+        }
+        bus = mraa_get_sub_platform_index(bus);
     }
+    syslog(LOG_NOTICE, "spi_init: Selected bus %d", bus);
+
     if (plat->spi_bus_count == 0) {
         syslog(LOG_ERR, "spi: no spi buses defined in platform");
         return NULL;
@@ -87,17 +114,23 @@ mraa_spi_init(int bus)
         }
     }
 
+    if (plat->spi_bus[bus].bus_id == -1) {
+        syslog(LOG_ERR, "Invalid spi bus %i, moving to default spi bus %i", bus, plat->def_spi_bus);
+        bus = plat->def_spi_bus;
+    }
+
     if (!plat->no_bus_mux) {
         int pos = plat->spi_bus[bus].sclk;
-        if (pos >= 0 && plat->pins[pos].spi.mux_total > 0) {
+        if (plat->pins[pos].spi.mux_total > 0) {
             if (mraa_setup_mux_mapped(plat->pins[pos].spi) != MRAA_SUCCESS) {
                 syslog(LOG_ERR, "spi: failed to set-up spi sclk multiplexer");
                 return NULL;
             }
         }
 
+
         pos = plat->spi_bus[bus].mosi;
-        if (pos >= 0 && plat->pins[pos].spi.mux_total > 0) {
+        if (plat->pins[pos].spi.mux_total > 0) {
             if (mraa_setup_mux_mapped(plat->pins[pos].spi) != MRAA_SUCCESS) {
                 syslog(LOG_ERR, "spi: failed to set-up spi mosi multiplexer");
                 return NULL;
@@ -105,7 +138,7 @@ mraa_spi_init(int bus)
         }
 
         pos = plat->spi_bus[bus].miso;
-        if (pos >= 0 && plat->pins[pos].spi.mux_total > 0) {
+        if (plat->pins[pos].spi.mux_total > 0) {
             if (mraa_setup_mux_mapped(plat->pins[pos].spi) != MRAA_SUCCESS) {
                 syslog(LOG_ERR, "spi: failed to set-up spi miso multiplexer");
                 return NULL;
@@ -113,13 +146,14 @@ mraa_spi_init(int bus)
         }
 
         pos = plat->spi_bus[bus].cs;
-        if (pos >= 0 && plat->pins[pos].spi.mux_total > 0) {
+        if (plat->pins[pos].spi.mux_total > 0) {
             if (mraa_setup_mux_mapped(plat->pins[pos].spi) != MRAA_SUCCESS) {
                 syslog(LOG_ERR, "spi: failed to set-up spi cs multiplexer");
                 return NULL;
             }
         }
     }
+
     mraa_spi_context dev = mraa_spi_init_raw(plat->spi_bus[bus].bus_id, plat->spi_bus[bus].slave_s);
 
     if (plat->adv_func->spi_init_post != NULL) {
@@ -138,7 +172,9 @@ mraa_spi_init_raw(unsigned int bus, unsigned int cs)
 {
     mraa_result_t status = MRAA_SUCCESS;
 
+
     mraa_spi_context dev = mraa_spi_init_internal(plat == NULL ? NULL : plat->adv_func);
+
     if (dev == NULL) {
         syslog(LOG_CRIT, "spi: Failed to allocate memory for context");
         status = MRAA_ERROR_NO_RESOURCES;
@@ -152,6 +188,10 @@ mraa_spi_init_raw(unsigned int bus, unsigned int cs)
         } else {
             goto init_raw_cleanup;
         }
+    }
+
+    if (IS_FUNC_DEFINED(dev, spi_init_bus_replace)) {
+	return dev;
     }
 
     char path[MAX_SIZE];
@@ -174,6 +214,7 @@ mraa_spi_init_raw(unsigned int bus, unsigned int cs)
     }
 
     status = mraa_spi_mode(dev, MRAA_SPI_MODE0);
+
     if (status != MRAA_SUCCESS) {
         goto init_raw_cleanup;
     }
@@ -202,10 +243,13 @@ init_raw_cleanup:
 mraa_result_t
 mraa_spi_mode(mraa_spi_context dev, mraa_spi_mode_t mode)
 {
+
     if (dev == NULL) {
         syslog(LOG_ERR, "spi: mode: context is invalid");
         return MRAA_ERROR_INVALID_HANDLE;
     }
+
+	syslog(LOG_ERR, "SPI MODE : %i", dev->advance_func->spi_mode_replace);
 
     if (IS_FUNC_DEFINED(dev, spi_mode_replace)) {
         return dev->advance_func->spi_mode_replace(dev, mode);
@@ -231,7 +275,7 @@ mraa_spi_mode(mraa_spi_context dev, mraa_spi_mode_t mode)
     }
 
     if (ioctl(dev->devfd, SPI_IOC_WR_MODE, &spi_mode) < 0) {
-        syslog(LOG_ERR, "spi: Failed to set spi mode");
+        syslog(LOG_ERR, "spi: Failed to set spi mode. Error %d %s", errno, strerror(errno));
         return MRAA_ERROR_INVALID_RESOURCE;
     }
 
@@ -253,7 +297,7 @@ mraa_spi_frequency(mraa_spi_context dev, int hz)
 
     int speed = 0;
     dev->clock = hz;
-    if (ioctl(dev->devfd, SPI_IOC_RD_MAX_SPEED_HZ, &speed) != -1) {
+    if (ioctl(11, SPI_IOC_RD_MAX_SPEED_HZ, &speed) != -1) {
         if (speed < hz) {
             dev->clock = speed;
             syslog(LOG_WARNING, "spi: Selected speed reduced to max allowed speed");
@@ -421,7 +465,7 @@ mraa_spi_transfer_buf_word(mraa_spi_context dev, uint16_t* data, uint16_t* rxbuf
     if (ioctl(dev->devfd, SPI_IOC_MESSAGE(1), &msg) < 0) {
         syslog(LOG_ERR, "spi: Failed to perform dev transfer");
         return MRAA_ERROR_INVALID_RESOURCE;
-    }
+    } 
     return MRAA_SUCCESS;
 }
 
@@ -439,6 +483,7 @@ mraa_spi_write_buf(mraa_spi_context dev, uint8_t* data, int length)
         free(recv);
         return NULL;
     }
+	
     return recv;
 }
 
