@@ -1098,7 +1098,7 @@ mraa_ftdi_ft4222_gpio_monitor(void *arg)
                 prev_value = value;
             }
         }
-        mraa_ftdi_ft4222_sleep_ms(20);
+        mraa_ftdi_ft4222_sleep_ms(1);
     }
 }
 
@@ -1181,7 +1181,7 @@ mraa_ftdi_ft4222_gpio_wait_interrupt_replace(mraa_gpio_context dev)
             default:;
         }
         if (!interrupt_detected)
-            mraa_ftdi_ft4222_sleep_ms(20);
+            mraa_ftdi_ft4222_sleep_ms(1);
     }
     if (dev->isr_thread_terminating)
         mraa_ftdi_ft4222_gpio_monitor_remove_pin(dev->phy_pin);
